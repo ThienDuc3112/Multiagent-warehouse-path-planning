@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class Buffer:
+class BufferRollout:
     T: int
     A: int
     crop: int
