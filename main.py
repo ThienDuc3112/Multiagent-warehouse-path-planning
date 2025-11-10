@@ -384,9 +384,15 @@ def _(
                 if done:
                     obs, info = self.env.reset()
 
-        def _gae(self):
+            with torch.no_grad():
+                gmap_last = build_global_map5(self.env).to(self.device)
+                ents_last = build_entities(self.env).to(self.device)
+                last_value = self.critic(gmap_last.unsqueeze(0), ents_last.unsqueeze(0)).squeeze(0)
+            return last_value
+
+        def _gae(self, last_value):
             """Compute GAE(λ) on the scalar central value stream."""
-            V = self.buf.values
+            V = torch.cat([self.buf.values, last_value.view(1)])
             R = self.buf.rewards
             D = self.buf.dones
             T = self.T
@@ -395,17 +401,16 @@ def _(
             lastgaelam = 0.0
             for t in reversed(range(T)):
                 nonterminal = 1.0 - D[t]
-                nextv = V[t+1] if t < T-1 else V[t]
-                delta = R[t] + self.gamma * nextv * nonterminal - V[t]
+                delta = R[t] + self.gamma * V[t+1] * nonterminal - V[t]
                 lastgaelam = delta + self.gamma * self.lam * nonterminal * lastgaelam
                 adv[t] = lastgaelam
-            ret = adv + V
+            ret = adv + V[:-1]
             # normalize advantages
             adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
             return adv, ret
 
-        def update(self):
-            adv, ret = self._gae()
+        def update(self, last_value):
+            adv, ret = self._gae(last_value)
 
             # Flatten over (T * A)
             T, A = self.T, self.A
@@ -451,8 +456,8 @@ def _(
             }
 
         def train_step(self):
-            self.rollout()
-            return self.update()
+            last_value = self.rollout()
+            return self.update(last_value)
     return (Trainer,)
 
 
@@ -471,12 +476,12 @@ def _(CentralCritic, SharedActor, Trainer, env, torch):
 
     # 3) trainer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=512)
+    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=1028)
 
     # 4) loop
-    for it in range(200):
+    for it in range(1000):
         stats = trainer.train_step()
-        if (it+1) % 5 == 0:
+        if (it+1) % 10 == 0:
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
                   f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
                   f"adv={stats['adv_mean']:.3f} ret={stats['ret_mean']:.3f}")
