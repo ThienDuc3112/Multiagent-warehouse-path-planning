@@ -36,15 +36,14 @@ def _():
     from utils import DictToListWrapper
 
     from env import WarehouseInstance, WarehousePickPlaceMultiEnv
+    from fast_env import FastWarehouseInstance, FastWarehousePickPlaceMultiEnv
 
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    rng = np.random.default_rng(0)
     return (
-        Any,
-        Dict,
+        DictToListWrapper,
+        FastWarehouseInstance,
         RecordEpisodeStatistics,
-        Tuple,
         WarehouseInstance,
         nn,
         np,
@@ -75,7 +74,7 @@ def _(nn, np, re):
         nn.init.orthogonal_(layer.weight, std)
         nn.init.constant_(layer.bias, bias_const)
         return layer
-    return layer_init, parse_key
+    return (layer_init,)
 
 
 @app.cell(hide_code=True)
@@ -112,7 +111,60 @@ def _(RecordEpisodeStatistics, WarehouseInstance):
         return env
 
     test_env = create_env().env
-    return (test_env,)
+    return create_env, test_env
+
+
+@app.cell
+def _(DictToListWrapper, test_env):
+    print(f"Observation space: {test_env.observation_space}")
+
+    print(f"Action space: {test_env.action_space}")
+    print(test_env.render())
+
+    test_dict_env = DictToListWrapper(test_env)
+
+    test_dict_env.get_action_description()
+    test_dict_env.get_state_description()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Environment creation (fast version)
+    See the full definition in `./fast_env.py`
+
+    This used caching with numpy
+    """)
+    return
+
+
+@app.cell
+def _(FastWarehouseInstance, RecordEpisodeStatistics, create_env):
+    def create_fast_env():
+        inst_dict = {
+            "height": 21, "width": 21, "horizon": 400,
+            "robots": ["r1", "r2", "r3"],
+            "start_positions": {"r1": (1, 1), "r2": (1, 19), "r3": (10, 1)},
+            "A_targets": {"r1": (2, 2), "r2": (2, 18), "r3": (10, 2)},
+            "B_targets": {"r1": (18, 18), "r2": (18, 2), "r3": (10, 18)},
+            "obstacles": [
+                (3, 3), (4, 3), (5, 3),
+                (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
+                (10, 11), (10, 12), (10, 13), (10, 14), (10, 15),
+            ],
+            # Optional:
+            # "start_carry": {"r1": False, "r2": False, "r3": False},
+            # "start_delivered": {"r1": False, "r2": False, "r3": False},
+        }
+        inst = FastWarehouseInstance.from_dict(inst_dict)
+
+        env = inst.make_env(render_mode="ansi", seed=0)
+        env = RecordEpisodeStatistics(env)
+        return env
+
+    test_fast_env = create_env().env
+    return
 
 
 @app.cell
@@ -121,7 +173,6 @@ def _(test_env):
 
     print(f"Action space: {test_env.action_space}")
     print(test_env.render())
-
     return
 
 
@@ -134,121 +185,7 @@ def _(mo):
 
 
 @app.cell
-def _(Any, Dict, Tuple, np, parse_key):
-    class EgocentricBuilder:
-        """Per-agent 11x11 crops + action masks from full state."""
-        def __init__(self, fov):
-            self.fov = fov
-            self.rad = fov // 2
-
-        def build(self, state: Dict[str, Any], nf: Dict[str, Any]) -> Dict[str, np.ndarray]:
-            H = int(nf.get("H", 21))
-            W = int(nf.get("W", 21))
-
-            obstacles = np.zeros((H, W), dtype=np.float32)
-            for (x, y), val in nf.get("OBSTACLE", {}).items():
-                if 0 <= x < H and 0 <= y < W:
-                    obstacles[x, y] = 1.0 if val else 0.0
-
-            Axy = {rid: xy for rid, xy in nf.get("A", {}).items()}
-            Bxy = {rid: xy for rid, xy in nf.get("B", {}).items()}
-
-            agent_xyc: Dict[str, Tuple[int, int, bool]] = {}
-            for k, v in state.items():
-                name, args = parse_key(k)
-                if name == "agent_x":
-                    rid = args[0]
-                    x = int(v)
-                    y = int(state.get(f"agent_y({rid})", 0))
-                    c = bool(state.get(f"carry({rid})", 0))
-                    agent_xyc[rid] = (x, y, c)
-
-            rids = sorted(agent_xyc.keys())
-            A = len(rids)
-
-            # Global raster for critic: [obstacle, agent_occ, agent_carry, A, B]
-            global_map = np.zeros((5, H, W), dtype=np.float32)
-            global_map[0] = obstacles
-            for rid, (ax, ay) in Axy.items():
-                if 0 <= ax < H and 0 <= ay < W:
-                    global_map[3, ax, ay] = 1.0
-            for rid, (bx, by) in Bxy.items():
-                if 0 <= bx < H and 0 <= by < W:
-                    global_map[4, bx, by] = 1.0
-            for rid, (x, y, c) in agent_xyc.items():
-                if 0 <= x < H and 0 <= y < W:
-                    global_map[1, x, y] = 1.0
-                    if c: global_map[2, x, y] = 1.0
-
-            # Per-agent crops: [obst, others_occ, others_carry, A, B, ego]
-            C = 6
-            crops = np.zeros((A, C, self.fov, self.fov), dtype=np.float32)
-            amasks = np.ones((A, 5), dtype=np.float32)  # {wait,N,S,W,E}
-
-            for i, rid in enumerate(rids):
-                x, y, c = agent_xyc[rid]
-                ax, ay = Axy[rid]
-                bx, by = Bxy[rid]
-
-                x0, x1 = x - self.rad, x + self.rad + 1
-                y0, y1 = y - self.rad, y + self.rad + 1
-
-                # Obstacles
-                for xx in range(x0, x1):
-                    for yy in range(y0, y1):
-                        cx, cy = xx - x0, yy - y0
-                        if 0 <= xx < H and 0 <= yy < W:
-                            crops[i, 0, cx, cy] = obstacles[xx, yy]
-                        else:
-                            crops[i, 0, cx, cy] = 1.0  # OOB = wall
-
-                # Other robots
-                for rid2, (x2, y2, c2) in agent_xyc.items():
-                    if rid2 == rid: continue
-                    if x0 <= x2 < x1 and y0 <= y2 < y1:
-                        cx, cy = x2 - x0, y2 - y0
-                        crops[i, 1, cx, cy] = 1.0
-                        if c2: crops[i, 2, cx, cy] = 1.0
-
-                # A and B markers for this robot
-                if x0 <= ax < x1 and y0 <= ay < y1:
-                    crops[i, 3, ax - x0, ay - y0] = 1.0
-                if x0 <= bx < x1 and y0 <= by < y1:
-                    crops[i, 4, bx - x0, by - y0] = 1.0
-
-                # Ego
-                crops[i, 5, self.rad, self.rad] = 1.0
-
-                # Action mask by walls/obstacles
-                def valid(xx, yy):
-                    return 0 <= xx < H and 0 <= yy < W and obstacles[xx, yy] == 0.0
-                if not valid(x-1, y): amasks[i, 1] = 0.0  # N
-                if not valid(x+1, y): amasks[i, 2] = 0.0  # S
-                if not valid(x, y-1): amasks[i, 3] = 0.0  # W
-                if not valid(x, y+1): amasks[i, 4] = 0.0  # E
-
-            # Entities for critic: [x_norm, y_norm, carrying, was_blocked(0)]
-            ents = []
-            for rid in rids:
-                x, y, c = agent_xyc[rid]
-                ents.append([x/(H-1), y/(W-1), 1.0 if c else 0.0, 0.0])
-            ents = np.asarray(ents, dtype=np.float32)
-
-            return {
-                "rids": np.array(rids),
-                "crops": crops,               # [A, 6, 11, 11]
-                "amasks": amasks,             # [A, 5]
-                "global_map": global_map,     # [5, H, W]
-                "entities": ents              # [A, 4]
-            }
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## ENV wrapper
-    """)
+def _():
     return
 
 

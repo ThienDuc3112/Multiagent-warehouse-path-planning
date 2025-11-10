@@ -1,8 +1,6 @@
 from IPython.display import clear_output
 import matplotlib.pyplot as plt
-
 import numpy as np
-
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
 
