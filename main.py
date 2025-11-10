@@ -35,16 +35,17 @@ def _():
 
     from utils import DictToListWrapper
 
+    from env import WarehouseInstance, WarehousePickPlaceMultiEnv
+
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rng = np.random.default_rng(0)
     return (
         Any,
         Dict,
-        DictToListWrapper,
-        RDDLEnv,
         RecordEpisodeStatistics,
         Tuple,
+        WarehouseInstance,
         nn,
         np,
         re,
@@ -80,35 +81,46 @@ def _(nn, np, re):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## RDDL env files checking
-    This used code from assignment 2
+    ## Environment creation
+    See the full definition in `./env.py`
     """)
     return
 
 
 @app.cell
-def _(DictToListWrapper, RDDLEnv, RecordEpisodeStatistics):
+def _(RecordEpisodeStatistics, WarehouseInstance):
     def create_env():
-        env = RDDLEnv(
-            domain="env/warehouse_pickplace_multi.rddl",
-            instance="env/warehouse_pickplace_instance_21x21_3agents.rddl"
-        )
-        # If your observation is a Dict of booleans, flatten it:
-        env = DictToListWrapper(env)
+        inst_dict = {
+            "height": 21, "width": 21, "horizon": 400,
+            "robots": ["r1", "r2", "r3"],
+            "start_positions": {"r1": (1, 1), "r2": (1, 19), "r3": (10, 1)},
+            "A_targets": {"r1": (2, 2), "r2": (2, 18), "r3": (10, 2)},
+            "B_targets": {"r1": (18, 18), "r2": (18, 2), "r3": (10, 18)},
+            "obstacles": [
+                (3, 3), (4, 3), (5, 3),
+                (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
+                (10, 11), (10, 12), (10, 13), (10, 14), (10, 15),
+            ],
+            # Optional:
+            # "start_carry": {"r1": False, "r2": False, "r3": False},
+            # "start_delivered": {"r1": False, "r2": False, "r3": False},
+        }
+        inst = WarehouseInstance.from_dict(inst_dict)
+
+        env = inst.make_env(render_mode="ansi", seed=0)
         env = RecordEpisodeStatistics(env)
         return env
 
-    list_env = create_env().env
-    return (list_env,)
+    test_env = create_env().env
+    return (test_env,)
 
 
 @app.cell
-def _(list_env):
-    print(f"Observation space: {list_env.observation_space}")
-    list_env.get_state_description()
+def _(test_env):
+    print(f"Observation space: {test_env.observation_space}")
 
-    print(f"Action space: {list_env.action_space}")
-    list_env.get_action_description()
+    print(f"Action space: {test_env.action_space}")
+    print(test_env.render())
 
     return
 
@@ -229,7 +241,7 @@ def _(Any, Dict, Tuple, np, parse_key):
                 "global_map": global_map,     # [5, H, W]
                 "entities": ents              # [A, 4]
             }
-    return (EgocentricBuilder,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -237,31 +249,6 @@ def _(mo):
     mo.md(r"""
     ## ENV wrapper
     """)
-    return
-
-
-@app.cell
-def _(EgocentricBuilder, RDDLEnv):
-    class WarehouseEnv:
-        def __init__(self, fov,
-                     domain,
-                     instance):
-            self.env = RDDLEnv(domain=domain, instance=instance)
-            self.builder = EgocentricBuilder(fov=fov)
-            self._last_raw_obs = None
-
-    return (WarehouseEnv,)
-
-
-@app.cell
-def _(WarehouseEnv):
-    env = WarehouseEnv(
-        11, 
-        "env/warehouse_pickplace_multi.rddl",
-        "env/warehouse_pickplace_instance_21x21_3agents.rddl"
-    )
-    print(f"{env.env.observation_space}")
-    print(f"{env.env.action_space}")
     return
 
 
