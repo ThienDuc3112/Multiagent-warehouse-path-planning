@@ -1,0 +1,115 @@
+domain warehouse_pickplace_multi {
+
+  requirements = { integer-valued, intermediate-nodes, reward-deterministic };
+
+  types { robot : object; };
+
+  pvariables {
+    // Grid size
+    H : { non-fluent, int };
+    W : { non-fluent, int };
+
+    // Per-robot pickup & drop targets
+    A_X(robot) : { non-fluent, int };
+    A_Y(robot) : { non-fluent, int };
+    B_X(robot) : { non-fluent, int };
+    B_Y(robot) : { non-fluent, int };
+
+    // State
+    agent_x(robot)   : { state-fluent, int,  default = 0 };
+    agent_y(robot)   : { state-fluent, int,  default = 0 };
+    carry(robot)     : { state-fluent, bool, default = false };
+    delivered(robot) : { state-fluent, bool, default = false };
+
+    // Actions
+    move_north(robot) : { action-fluent, bool, default = false };
+    move_south(robot) : { action-fluent, bool, default = false };
+    move_west(robot)  : { action-fluent, bool, default = false };
+    move_east(robot)  : { action-fluent, bool, default = false };
+    wait(robot)       : { action-fluent, bool, default = false };
+
+    // Intermediates
+    x_tgt(robot)       : { interm-fluent, int,  level = 1 };
+    y_tgt(robot)       : { interm-fluent, int,  level = 1 };
+    tx(robot)          : { interm-fluent, int,  level = 1 }; // target x (A or B)
+    ty(robot)          : { interm-fluent, int,  level = 1 }; // target y (A or B)
+    blocked(robot)     : { interm-fluent, bool, level = 2 };
+    dist_before(robot) : { interm-fluent, int,  level = 2 };
+    dist_after(robot)  : { interm-fluent, int,  level = 2 };
+  };
+
+  cpfs {
+
+    // Which target to chase
+    tx(?r) = if (carry(?r)) then B_X(?r) else A_X(?r);
+    ty(?r) = if (carry(?r)) then B_Y(?r) else A_Y(?r);
+
+    // Tentative next coords (bounded grid)
+    x_tgt(?r) =
+      if (move_north(?r) ^ (agent_x(?r) > 0))          then agent_x(?r) - 1
+      else if (move_south(?r) ^ (agent_x(?r) < H - 1)) then agent_x(?r) + 1
+      else agent_x(?r);
+
+    y_tgt(?r) =
+      if (move_west(?r) ^ (agent_y(?r) > 0))           then agent_y(?r) - 1
+      else if (move_east(?r) ^ (agent_y(?r) < W - 1))  then agent_y(?r) + 1
+      else agent_y(?r);
+
+    // Collision or head-on swap (no '!=' in RDDL; use ~(a == b))
+    blocked(?r) =
+      [exists_{?r2: robot} (
+         (~(?r2 == ?r)) ^
+         ( ((x_tgt(?r) == x_tgt(?r2)) ^ (y_tgt(?r) == y_tgt(?r2)))
+           |
+           ( (x_tgt(?r) == agent_x(?r2)) ^ (y_tgt(?r) == agent_y(?r2))
+             ^ (x_tgt(?r2) == agent_x(?r)) ^ (y_tgt(?r2) == agent_y(?r)) )
+         )
+       )];
+
+    // Apply motion (stay if blocked)
+    agent_x'(?r) = if (blocked(?r)) then agent_x(?r) else x_tgt(?r);
+    agent_y'(?r) = if (blocked(?r)) then agent_y(?r) else y_tgt(?r);
+
+    // Pick up at A when not carrying; drop clears carry when at B
+    carry'(?r) =
+      ( carry(?r)
+        | ( ~carry(?r) ^ (agent_x(?r) == A_X(?r)) ^ (agent_y(?r) == A_Y(?r)) ) )
+      ^ ~( (agent_x(?r) == B_X(?r)) ^ (agent_y(?r) == B_Y(?r)) );
+
+    // Delivered once carrying and at B
+    delivered'(?r) =
+      delivered(?r)
+      | ( carry(?r) ^ (agent_x(?r) == B_X(?r)) ^ (agent_y(?r) == B_Y(?r)) );
+
+    // Manhattan distances
+    dist_before(?r) =
+      ( if (agent_x(?r) >= tx(?r)) then (agent_x(?r) - tx(?r)) else (tx(?r) - agent_x(?r)) )
+      +
+      ( if (agent_y(?r) >= ty(?r)) then (agent_y(?r) - ty(?r)) else (ty(?r) - agent_y(?r)) );
+
+    dist_after(?r) =
+      ( if (x_tgt(?r) >= tx(?r)) then (x_tgt(?r) - tx(?r)) else (tx(?r) - x_tgt(?r)) )
+      +
+      ( if (y_tgt(?r) >= ty(?r)) then (y_tgt(?r) - ty(?r)) else (ty(?r) - y_tgt(?r)) );
+  };
+
+  reward =
+    sum_{?r: robot} (
+        -0.01
+      + ( if ( (x_tgt(?r) == agent_x(?r)) ^ (y_tgt(?r) == agent_y(?r))
+               ^ (move_north(?r) | move_south(?r) | move_west(?r) | move_east(?r)) )
+          then -0.02 else 0.0 )
+      + ( if ( (~carry(?r)) ^ (agent_x(?r) == A_X(?r)) ^ (agent_y(?r) == A_Y(?r)) )
+          then 0.5 else 0.0 )
+      + ( if ( carry(?r) ^ (agent_x(?r) == B_X(?r)) ^ (agent_y(?r) == B_Y(?r)) )
+          then 1.0 else 0.0 )
+      + (0.05 * (dist_before(?r) - dist_after(?r)))
+      + ( if (blocked(?r)) then -0.05 else 0.0 )
+    );
+
+  action-preconditions {
+    forall_{?r: robot} [
+      (move_north(?r) + move_south(?r) + move_west(?r) + move_east(?r) + wait(?r)) <= 1
+    ];
+  };
+}
