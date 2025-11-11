@@ -12,6 +12,7 @@ class BufferRollout:
 
     def __post_init__(self):
         self.crops = torch.zeros(self.T, self.A, 6, self.crop, self.crop, dtype=torch.float32, device=self.device)
+        self.gvecs = torch.zeros(self.T, self.A, 4, dtype=torch.float32, device=self.device)
         self.amask = torch.zeros(self.T, self.A, 5, dtype=torch.float32, device=self.device)
         self.actions = torch.zeros(self.T, self.A, dtype=torch.long, device=self.device)
         self.logps = torch.zeros(self.T, self.A, dtype=torch.float32, device=self.device)
@@ -34,9 +35,10 @@ class BufferRollout:
         self.rewards[i] = reward_t
         self.dones[i] = done_t
 
-    def add_local(self, crops_t, amask_t, actions_t, logps_t):
+    def add_local(self, crops_t, gvec_t, amask_t, actions_t, logps_t):
         i = self.ptr
         self.crops[i].copy_(crops_t)
+        self.gvecs[i].copy_(gvec_t)
         self.amask[i].copy_(amask_t)
         self.actions[i].copy_(actions_t)
         self.logps[i].copy_(logps_t)

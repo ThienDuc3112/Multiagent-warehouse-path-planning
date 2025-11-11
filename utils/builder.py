@@ -120,3 +120,22 @@ def build_entities(env):
         d = 1.0 if env._delivered[rid] else 0.0
         rows.append([x / Hm1, y / Wm1, c, d])
     return torch.tensor(rows, dtype=torch.float32)
+
+
+def current_goal_xy(env, rid):
+    carrying = env._carry[rid]  # or env.state['carry'][rid]
+    if carrying:
+        gx, gy = env.B[rid]
+    else:
+        gx, gy = env.A[rid]
+    return gx, gy, float(carrying)
+
+
+def build_goal_vec(env, rid, H, W, device):
+    rx, ry = env._x[rid], env._y[rid]   # (x,y) of agent
+    gx, gy, phase = current_goal_xy(env, rid)
+    dx = 2.0 * (gx - rx) / max(W - 1, 1)   # [-1,1]
+    dy = 2.0 * (gy - ry) / max(H - 1, 1)   # [-1,1]
+    dist = ((gx - rx)**2 + (gy - ry)**2) ** 0.5
+    dist = dist / ((H * H + W * W) ** 0.5)  # [0,1]
+    return torch.tensor([dx, dy, dist, phase], dtype=torch.float32, device=device)

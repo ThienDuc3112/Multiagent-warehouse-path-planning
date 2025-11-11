@@ -35,7 +35,7 @@ def _():
 
     from gymnasium.wrappers import RecordEpisodeStatistics
 
-    from utils import DictToListWrapper, build_action_mask, BufferRollout, build_global_map5, build_entities, build_actor_crop6
+    from utils import DictToListWrapper, build_action_mask, BufferRollout, build_global_map5, build_entities, build_actor_crop6, build_goal_vec
 
     from env import WarehouseInstance, WarehousePickPlaceMultiEnv
     from fast_env import FastWarehouseInstance, FastWarehousePickPlaceMultiEnv
@@ -52,6 +52,7 @@ def _():
         build_actor_crop6,
         build_entities,
         build_global_map5,
+        build_goal_vec,
         nn,
         np,
         optim,
@@ -196,7 +197,7 @@ def _(mo):
 def _(layer_init, nn, torch):
     class SharedActor(nn.Module):
         """Per-agent policy over 11x11 crops, shared across agents."""
-        def __init__(self, c_in=6, n_actions=5, hidden=128):
+        def __init__(self, c_in=6, n_actions=5, hidden=128, goal_dim=4):
             super().__init__()
             self.conv = nn.Sequential(
                 nn.Conv2d(c_in, 32, 3, padding=1), nn.ReLU(),
@@ -204,15 +205,16 @@ def _(layer_init, nn, torch):
                 nn.Conv2d(64, 64, 3, padding=1), nn.ReLU()
             )
             self.head = nn.Sequential(
-                nn.Linear(64*11*11, hidden), nn.ReLU(),
+                nn.Linear(64*11*11 + goal_dim, hidden), nn.ReLU(),
                 nn.Linear(hidden, n_actions)
             )
             for m in self.modules():
                 if isinstance(m, nn.Linear): layer_init(m)
 
-        def forward(self, crops, amask=None):
+        def forward(self, crops, goal_vec, amask=None):
             x = self.conv(crops)
             x = x.reshape(x.size(0), -1)
+            x = torch.cat([x, goal_vec], dim=1)
             logits = self.head(x)
             if amask is not None:
                 logits = logits + (amask==0).float()*-1e9
@@ -301,6 +303,7 @@ def _(
     build_actor_crop6,
     build_entities,
     build_global_map5,
+    build_goal_vec,
     nn,
     optim,
     torch,
@@ -353,25 +356,28 @@ def _(
             # Actor inputs for all agents
             crops = []
             amasks = []
+            gvecs = []
             for rid in self.robots:
                 crops.append(build_actor_crop6(self.env, rid, self.crop))
                 amasks.append(build_action_mask(self.env, rid))
+                gvecs.append(build_goal_vec(self.env, rid, self.env.H, self.env.W, self.device))
             crops = torch.stack(crops, dim=0).to(self.device)            # (A,6,11,11)
             amasks = torch.stack(amasks, dim=0).to(self.device)          # (A,5)
+            gvecs = torch.stack(gvecs, dim=0).to(self.device)            # (A,4)
 
-            logits = self.actor(crops, amask=amasks)                     # (A,5)
+            logits = self.actor(crops, gvecs, amask=amasks)                     # (A,5)
             dist = torch.distributions.Categorical(logits=logits)
             actions = dist.sample()                                       # (A,)
             logps = dist.log_prob(actions)                                # (A,)
 
-            return gmap, ents, V, crops, amasks, actions, logps
+            return gmap, ents, V, crops, gvecs, amasks, actions, logps
 
         def rollout(self):
             self.buf.ptr = 0
             obs, info = self.env.reset()
             done = False
             while not self.buf.full():
-                gmap, ents, V, crops, amasks, actions, logps = self._act()
+                gmap, ents, V, crops, gvecs, amasks, actions, logps = self._act()
 
                 action_dict = {rid: int(a.item()) for rid, a in zip(self.robots, actions)}
                 _, reward, terminated, truncated, _ = self.env.step(action_dict)
@@ -379,10 +385,12 @@ def _(
 
                 # store
                 self.buf.add_global(gmap, ents, V, reward, float(done))
-                self.buf.add_local(crops, amasks, actions, logps)
+                self.buf.add_local(crops, gvecs, amasks, actions, logps)
 
                 if done:
                     obs, info = self.env.reset()
+                if self.buf.ptr % 16 == 0:
+                    print(self.env.render()) # <---- For debug
 
             with torch.no_grad():
                 gmap_last = build_global_map5(self.env).to(self.device)
@@ -415,6 +423,7 @@ def _(
             # Flatten over (T * A)
             T, A = self.T, self.A
             crops = self.buf.crops.reshape(T*A, 6, self.crop, self.crop)
+            gvecs = self.buf.gvecs.reshape(T*A, 4)
             amask = self.buf.amask.reshape(T*A, 5)
             actions = self.buf.actions.reshape(T*A)
             old_logps = self.buf.logps.reshape(T*A).detach()
@@ -427,7 +436,7 @@ def _(
             adv_flat = adv.unsqueeze(1).repeat(1, A).reshape(T*A)
             ret_flat = ret.unsqueeze(1).repeat(1, A).reshape(T*A)
 
-            logits = self.actor(crops, amask=amask)
+            logits = self.actor(crops, gvecs, amask=amask)
             dist = torch.distributions.Categorical(logits=logits)
             new_logps = dist.log_prob(actions)
             entropy = dist.entropy().mean()
@@ -474,18 +483,20 @@ def _(CentralCritic, SharedActor, Trainer, env, torch):
     actor = SharedActor(c_in=6, n_actions=5, hidden=128)
     critic = CentralCritic(c_map=5, f_agent=4, d=128)
 
-    # 3) trainer
+    # 1) trainer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=1028)
+    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=1024)
 
-    # 4) loop
-    for it in range(1000):
+    # 2) loop
+    for it in range(10):
+        print("\n========== RESET ==========\n")
         stats = trainer.train_step()
-        if (it+1) % 10 == 0:
+        if (it+1) % 5 == 0:
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
                   f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
                   f"adv={stats['adv_mean']:.3f} ret={stats['ret_mean']:.3f}")
 
+    print(trainer.env.render())
     return
 
 
