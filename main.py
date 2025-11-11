@@ -160,10 +160,12 @@ def _(FastWarehouseInstance, RecordEpisodeStatistics):
             "height": 15, "width": 15, "horizon": 128,
             "robots": ["r1", "r2", "r3"],
             "start_positions": {"r1": (1, 1), "r2": (1, 14), "r3": (10, 1)},
-            "A_targets": {"r1": (2, 2), "r2": (2, 13), "r3": (10, 2)},
-            "B_targets": {"r1": (13, 13), "r2": (13, 2), "r3": (8, 13)},
+            "A_targets": {"r1": (4, 4), "r2": (1, 10), "r3": (12, 2)},
+            "B_targets": {"r1": (13, 13), "r2": (14, 1), "r3": (9, 14)},
             "obstacles": [
                 (3, 3), (4, 3), (5, 3),
+                (8, 14), (8, 13), 
+                (9, 11), (8, 11),
                 (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
                 (10, 11), (10, 12), (10, 13), (10, 14),
             ],
@@ -573,14 +575,14 @@ def _(mo):
 
 @app.cell
 def _(CentralCritic, SharedActor, Trainer, env, torch):
-    actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=7)
+    actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=9)
     critic = CentralCritic(c_map=5, f_agent=4, d=128)
 
     # 1) trainer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=64, crop=7)
+    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=64, crop=9)
 
-    trainer.load_into("models/3agent-15x15.mdl")
+    # trainer.load_into("models/3agent-15x15-updated_env.mdl")
 
     # 2) loop
     for it in range(4000):
@@ -591,12 +593,12 @@ def _(CentralCritic, SharedActor, Trainer, env, torch):
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
               f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
               f"adv={stats['adv_mean']:.3f} adv_std={stats['adv_std']:.3f} ret={stats['ret_mean']:.3f}")
-    return
+    return (trainer,)
 
 
 @app.cell
-def _():
-    # trainer.save("models/3agent-15x15-1.mdl", 8000)
+def _(trainer):
+    trainer.save("models/3agent-15x15-updated_env-2-v2.mdl", 4000)
     return
 
 
@@ -604,10 +606,14 @@ def _():
 def _(json):
     from utils import ansi_frames_to_gif
 
-    with open("saved_renders/4000_rollout.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
+    for i in [50, 100, 500, 1000, 4000]:
+    # for i in [50]:
+        name = f'{i:04d}_rollout'
 
-    ansi_frames_to_gif(data, fps=4, out_path="render_gifs/4000_rollout.gif")
+        with open(f"renders/{name}.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        ansi_frames_to_gif(data, fps=2, out_path=f"saved_renders/{name}_env-2-v2.gif")
     return
 
 

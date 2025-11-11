@@ -46,7 +46,7 @@ def ansi_frames_to_gif(
     robots: List[str] = data.get("meta", {}).get("robots", [])
     frames_text: List[str] = []
 
-    for ep in data.get("episodes", []):
+    for ep in data.get("episodes", [])[:1]:
         for st in ep.get("steps", []):
             grid_txt = st.get("render_ansi", "").rstrip("\n")
             if not grid_txt:

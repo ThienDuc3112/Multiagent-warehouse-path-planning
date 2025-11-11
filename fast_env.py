@@ -306,18 +306,13 @@ class FastWarehousePickPlaceMultiEnv(gym.Env):
         blocked = {rid: False for rid in self.robots}
         counts = {}
         for rid in self.robots:
+            old_key = (self._x[rid], self._y[rid])
             key = (next_x[rid], next_y[rid])
             counts[key] = counts.get(key, 0) + 1
+            counts[old_key] = counts.get(old_key, 0) + 1
         for rid in self.robots:
             if counts[(next_x[rid], next_y[rid])] > 1:
                 blocked[rid] = True
-        for i in range(len(self.robots)):
-            for j in range(i + 1, len(self.robots)):
-                ri, rj = self.robots[i], self.robots[j]
-                if (next_x[ri], next_y[ri]) == (self._x[rj], self._y[rj]) and \
-                   (next_x[rj], next_y[rj]) == (self._x[ri], self._y[ri]):
-                    blocked[ri] = True
-                    blocked[rj] = True
         # Obstacles
         for rid in self.robots:
             if self._obs_grid[next_x[rid], next_y[rid]] == 1:
@@ -360,14 +355,14 @@ class FastWarehousePickPlaceMultiEnv(gym.Env):
         # Rewards
         rewards = {rid: -0.01 for rid in self.robots}
         for rid in self.robots:
+            if blocked[rid]:
+                rewards[rid] -= 0.1
             if self._delivered[rid]:
                 continue
             if dist_after[rid] < dist_before[rid]:
                 rewards[rid] += 0.05
             elif dist_after[rid] > dist_before[rid]:
                 rewards[rid] -= 0.05
-            if attempted[rid] and not moved[rid]:
-                rewards[rid] -= 0.02
             if picked_up[rid]:
                 rewards[rid] += 0.5
             if dropped[rid]:
