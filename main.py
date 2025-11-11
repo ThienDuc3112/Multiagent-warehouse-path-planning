@@ -57,6 +57,7 @@ def _():
         np,
         optim,
         re,
+        time,
         torch,
     )
 
@@ -152,15 +153,15 @@ def _(mo):
 def _(FastWarehouseInstance, RecordEpisodeStatistics):
     def create_fast_env():
         inst_dict = {
-            "height": 21, "width": 21, "horizon": 512,
+            "height": 15, "width": 15, "horizon": 128,
             "robots": ["r1", "r2", "r3"],
-            "start_positions": {"r1": (1, 1), "r2": (1, 19), "r3": (10, 1)},
-            "A_targets": {"r1": (2, 2), "r2": (2, 18), "r3": (10, 2)},
-            "B_targets": {"r1": (18, 18), "r2": (18, 2), "r3": (10, 18)},
+            "start_positions": {"r1": (1, 1), "r2": (1, 14), "r3": (10, 1)},
+            "A_targets": {"r1": (2, 2), "r2": (2, 13), "r3": (10, 2)},
+            "B_targets": {"r1": (13, 13), "r2": (13, 2), "r3": (8, 13)},
             "obstacles": [
                 (3, 3), (4, 3), (5, 3),
                 (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
-                (10, 11), (10, 12), (10, 13), (10, 14), (10, 15),
+                (10, 11), (10, 12), (10, 13), (10, 14),
             ],
             # Optional:
             # "start_carry": {"r1": False, "r2": False, "r3": False},
@@ -197,7 +198,7 @@ def _(mo):
 def _(layer_init, nn, torch):
     class SharedActor(nn.Module):
         """Per-agent policy over 11x11 crops, shared across agents."""
-        def __init__(self, c_in=6, n_actions=5, hidden=128, goal_dim=4):
+        def __init__(self, c_in=6, n_actions=5, hidden=128, goal_dim=4, crops=11):
             super().__init__()
             self.conv = nn.Sequential(
                 nn.Conv2d(c_in, 32, 3, padding=1), nn.ReLU(),
@@ -205,7 +206,7 @@ def _(layer_init, nn, torch):
                 nn.Conv2d(64, 64, 3, padding=1), nn.ReLU()
             )
             self.head = nn.Sequential(
-                nn.Linear(64*11*11 + goal_dim, hidden), nn.ReLU(),
+                nn.Linear(64*crops*crops + goal_dim, hidden), nn.ReLU(),
                 nn.Linear(hidden, n_actions)
             )
             for m in self.modules():
@@ -306,6 +307,8 @@ def _(
     build_goal_vec,
     nn,
     optim,
+    os,
+    time,
     torch,
 ):
     class Trainer:
@@ -387,10 +390,11 @@ def _(
                 self.buf.add_global(gmap, ents, V, reward, float(done))
                 self.buf.add_local(crops, gvecs, amasks, actions, logps)
 
-                if done:
-                    obs, info = self.env.reset()
                 if render and self.buf.ptr % 16 == 0:
                     print(self.env.render()) # <---- For debug
+                if done:
+                    obs, info = self.env.reset()
+
 
             with torch.no_grad():
                 gmap_last = build_global_map5(self.env).to(self.device)
@@ -467,6 +471,32 @@ def _(
         def train_step(self, render=False):
             last_value = self.rollout(render)
             return self.update(last_value)
+
+        def save(self, path: str, step: int, metrics: dict | None = None):
+            """Save actor, critic, optimizer, and a tiny training header."""
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            ckpt = {
+                "actor": self.actor.state_dict(),
+                "critic": self.critic.state_dict(),
+                "opt": self.opt.state_dict(),
+                "step": int(step),
+                "trainer_cfg": {
+                    "A": self.A, "T": self.T, "gamma": self.gamma, "lam": self.lam,
+                    "clip_eps": self.clip_eps, "ent_coef": self.ent_coef, "vf_coef": self.vf_coef,
+                    "max_grad_norm": self.max_grad_norm, "crop": self.crop,
+                },
+                "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "metrics": metrics or {},
+            }
+            torch.save(ckpt, path)
+
+        def load_into(self, path: str, strict: bool = True):
+            """Load weights/optimizer into *this* trainer (resume training)."""
+            ckpt = torch.load(path, map_location=self.device)
+            self.actor.load_state_dict(ckpt["actor"], strict=strict)
+            self.critic.load_state_dict(ckpt["critic"], strict=strict)
+            self.opt.load_state_dict(ckpt["opt"])
+            return ckpt
     return (Trainer,)
 
 
@@ -480,16 +510,16 @@ def _(mo):
 
 @app.cell
 def _(CentralCritic, SharedActor, Trainer, env, torch):
-    actor = SharedActor(c_in=6, n_actions=5, hidden=128)
+    actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=7)
     critic = CentralCritic(c_map=5, f_agent=4, d=128)
 
     # 1) trainer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=1024)
+    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=128, crop=7)
 
     # 2) loop
-    for it in range(2000):
-        stats = trainer.train_step(render=((it+1) % 32 == 0))
+    for it in range(4000):
+        stats = trainer.train_step(render=((it+1) % 50 == 0))
         if (it+1) % 5 == 0:
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
                   f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
