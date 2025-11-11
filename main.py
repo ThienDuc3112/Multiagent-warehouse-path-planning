@@ -290,7 +290,7 @@ def _(layer_init, nn, torch):
 
             x = torch.cat([M, Ep], dim=1)                             # [B,64+d]
             return self.head(x).squeeze(-1)                           # [B]
-    return CentralCritic, SharedActor
+    return
 
 
 @app.cell(hide_code=True)
@@ -560,7 +560,7 @@ def _(
             self.critic.load_state_dict(ckpt["critic"], strict=strict)
             self.opt.load_state_dict(ckpt["opt"])
             return ckpt
-    return (Trainer,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -571,24 +571,32 @@ def _(mo):
     return
 
 
-@app.cell
-def _(CentralCritic, SharedActor, Trainer, env, torch):
+app._unparsable_cell(
+    r"""
     actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=7)
     critic = CentralCritic(c_map=5, f_agent=4, d=128)
 
     # 1) trainer
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = \"cuda\" if torch.cuda.is_available() else \"cpu\"
     trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=64, crop=7)
 
     # 2) loop
     for it in range(4000):
         render = ((it+1) % 50 == 0)
-        render_path = f"renders/{it+1:04d}_rollout.json" if render else ""
+        render_path = f\"renders/{it+1:04d}_rollout.json\" if render else \"\"
         stats = trainer.train_step(render=render, render_path=render_path)
         if it%10 == 0:
-            print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
-              f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
-              f"adv={stats['adv_mean']:.3f} ret={stats['ret_mean']:.3f}")
+            print(f\"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} \"
+              f\"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} \"
+              f\"adv={stats['adv_mean']:.3f} adv_std={stats['adv_std':.3f]} ret={stats['ret_mean']:.3f}\")
+    """,
+    name="_"
+)
+
+
+@app.cell
+def _(trainer):
+    trainer.save("models/3agent-15x15.mdl", 4000)
     return
 
 
