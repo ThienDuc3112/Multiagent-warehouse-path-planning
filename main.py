@@ -20,8 +20,9 @@ def _(mo):
 
 @app.cell
 def _():
-    import re, math, random, pprint, time
+    import re, math, random, pprint, time, json, os
     from typing import Dict, List, Tuple, Any
+    from pathlib import Path
 
     import numpy as np
 
@@ -46,6 +47,7 @@ def _():
         BufferRollout,
         DictToListWrapper,
         FastWarehouseInstance,
+        Path,
         RecordEpisodeStatistics,
         WarehouseInstance,
         build_action_mask,
@@ -53,9 +55,11 @@ def _():
         build_entities,
         build_global_map5,
         build_goal_vec,
+        json,
         nn,
         np,
         optim,
+        os,
         re,
         time,
         torch,
@@ -300,12 +304,15 @@ def _(mo):
 @app.cell
 def _(
     BufferRollout,
+    Path,
     build_action_mask,
     build_actor_crop6,
     build_entities,
     build_global_map5,
     build_goal_vec,
+    json,
     nn,
+    np,
     optim,
     os,
     time,
@@ -354,7 +361,7 @@ def _(
             # Central critic inputs
             gmap = build_global_map5(self.env).to(self.device)           # (5,H,W)
             ents = build_entities(self.env).to(self.device)              # (A,4)
-            V = self.critic(gmap, ents)                                  # scalar
+            V = self.critic(gmap.unsqueeze(0), ents.unsqueeze(0)).squeeze(0)                                  # scalar
 
             # Actor inputs for all agents
             crops = []
@@ -375,10 +382,22 @@ def _(
 
             return gmap, ents, V, crops, gvecs, amasks, actions, logps
 
-        def rollout(self, render=False):
+        def rollout(self, render=False, render_path=None):
             self.buf.ptr = 0
             obs, info = self.env.reset()
             done = False
+
+            # JSON logging
+            episodes, ep_steps, ep_idx = [], [], 0
+        
+            rew_hist, val_hist = [], [] # quick sanity stats
+            def _flush_episode():
+                nonlocal ep_steps, ep_idx
+                if ep_steps:
+                    episodes.append({"reset_index": ep_idx, "steps": ep_steps})
+                    ep_steps = []
+                    ep_idx += 1
+                
             while not self.buf.full():
                 gmap, ents, V, crops, gvecs, amasks, actions, logps = self._act()
 
@@ -390,9 +409,30 @@ def _(
                 self.buf.add_global(gmap, ents, V, reward, float(done))
                 self.buf.add_local(crops, gvecs, amasks, actions, logps)
 
-                if render and self.buf.ptr % 16 == 0:
-                    print(self.env.render()) # <---- For debug
+                # stats
+                val_hist.append(float(V.detach().cpu() if torch.is_tensor(V) else V))
+                rew_hist.append(reward)
+            
+                # JSON step (every step)
+                if render and render_path is not None:
+                    try:
+                        ansi = self.env.render()
+                    except Exception:
+                        ansi = None
+                    ep_steps.append({
+                        "t_global": int(self.buf.ptr - 1),
+                        "t_local": len(ep_steps),
+                        "action": action_dict,
+                        "reward": reward,
+                        "done": bool(done),
+                        "logps": {rid: float(lp.item()) for rid, lp in zip(self.robots, logps)},
+                        "entropy_est": float(torch.distributions.Categorical(
+                            logits=self.actor(crops, gvecs, amask=amasks)
+                        ).entropy().mean().item()),
+                        "render_ansi": ansi,
+                    })
                 if done:
+                    _flush_episode()
                     obs, info = self.env.reset()
 
 
@@ -400,6 +440,28 @@ def _(
                 gmap_last = build_global_map5(self.env).to(self.device)
                 ents_last = build_entities(self.env).to(self.device)
                 last_value = self.critic(gmap_last.unsqueeze(0), ents_last.unsqueeze(0)).squeeze(0)
+
+            # write JSON once per rollout
+            if render and render_path is not None:
+                _flush_episode()
+                Path(os.path.dirname(render_path) or ".").mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "meta": {
+                        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "T": int(self.T),
+                        "A": int(self.A),
+                        "robots": list(map(str, self.robots)),
+                    },
+                    "episodes": episodes,
+                }
+                with open(render_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False)
+
+            # quick sanity print to catch degeneracy
+            if rew_hist:
+                print(f"[rollout] reward mean/std: {np.mean(rew_hist):.4f}/{np.std(rew_hist):.4f} | "
+                      f"V mean/std: {np.mean(val_hist):.4f}/{np.std(val_hist):.4f}")
+
             return last_value
 
         def _gae(self, last_value):
@@ -465,11 +527,12 @@ def _(
                 "v_loss": float(value_loss.item()),
                 "entropy": float(entropy.item()),
                 "adv_mean": float(adv.mean().item()),
+                "adv_std": float(adv.std(unbiased=False).item()),
                 "ret_mean": float(ret.mean().item()),
             }
 
-        def train_step(self, render=False):
-            last_value = self.rollout(render)
+        def train_step(self, render=False, render_path=""):
+            last_value = self.rollout(render, render_path)
             return self.update(last_value)
 
         def save(self, path: str, step: int, metrics: dict | None = None):
@@ -515,15 +578,17 @@ def _(CentralCritic, SharedActor, Trainer, env, torch):
 
     # 1) trainer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=128, crop=7)
+    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=64, crop=7)
 
     # 2) loop
     for it in range(4000):
-        stats = trainer.train_step(render=((it+1) % 50 == 0))
-        if (it+1) % 5 == 0:
+        render = ((it+1) % 50 == 0)
+        render_path = f"renders/{it+1:04d}_rollout.json" if render else ""
+        stats = trainer.train_step(render=render, render_path=render_path)
+        if it%10 == 0:
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
-                  f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
-                  f"adv={stats['adv_mean']:.3f} ret={stats['ret_mean']:.3f}")
+              f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
+              f"adv={stats['adv_mean']:.3f} ret={stats['ret_mean']:.3f}")
     return
 
 
