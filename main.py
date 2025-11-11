@@ -152,7 +152,7 @@ def _(mo):
 def _(FastWarehouseInstance, RecordEpisodeStatistics):
     def create_fast_env():
         inst_dict = {
-            "height": 21, "width": 21, "horizon": 400,
+            "height": 21, "width": 21, "horizon": 512,
             "robots": ["r1", "r2", "r3"],
             "start_positions": {"r1": (1, 1), "r2": (1, 19), "r3": (10, 1)},
             "A_targets": {"r1": (2, 2), "r2": (2, 18), "r3": (10, 2)},
@@ -372,7 +372,7 @@ def _(
 
             return gmap, ents, V, crops, gvecs, amasks, actions, logps
 
-        def rollout(self):
+        def rollout(self, render=False):
             self.buf.ptr = 0
             obs, info = self.env.reset()
             done = False
@@ -389,7 +389,7 @@ def _(
 
                 if done:
                     obs, info = self.env.reset()
-                if self.buf.ptr % 16 == 0:
+                if render and self.buf.ptr % 16 == 0:
                     print(self.env.render()) # <---- For debug
 
             with torch.no_grad():
@@ -464,8 +464,8 @@ def _(
                 "ret_mean": float(ret.mean().item()),
             }
 
-        def train_step(self):
-            last_value = self.rollout()
+        def train_step(self, render=False):
+            last_value = self.rollout(render)
             return self.update(last_value)
     return (Trainer,)
 
@@ -488,15 +488,12 @@ def _(CentralCritic, SharedActor, Trainer, env, torch):
     trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=1024)
 
     # 2) loop
-    for it in range(10):
-        print("\n========== RESET ==========\n")
-        stats = trainer.train_step()
+    for it in range(2000):
+        stats = trainer.train_step(render=((it+1) % 32 == 0))
         if (it+1) % 5 == 0:
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
                   f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
                   f"adv={stats['adv_mean']:.3f} ret={stats['ret_mean']:.3f}")
-
-    print(trainer.env.render())
     return
 
 
