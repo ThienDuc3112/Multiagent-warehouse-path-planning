@@ -290,7 +290,7 @@ def _(layer_init, nn, torch):
 
             x = torch.cat([M, Ep], dim=1)                             # [B,64+d]
             return self.head(x).squeeze(-1)                           # [B]
-    return
+    return CentralCritic, SharedActor
 
 
 @app.cell(hide_code=True)
@@ -389,7 +389,7 @@ def _(
 
             # JSON logging
             episodes, ep_steps, ep_idx = [], [], 0
-        
+
             rew_hist, val_hist = [], [] # quick sanity stats
             def _flush_episode():
                 nonlocal ep_steps, ep_idx
@@ -397,7 +397,7 @@ def _(
                     episodes.append({"reset_index": ep_idx, "steps": ep_steps})
                     ep_steps = []
                     ep_idx += 1
-                
+
             while not self.buf.full():
                 gmap, ents, V, crops, gvecs, amasks, actions, logps = self._act()
 
@@ -412,7 +412,7 @@ def _(
                 # stats
                 val_hist.append(float(V.detach().cpu() if torch.is_tensor(V) else V))
                 rew_hist.append(reward)
-            
+
                 # JSON step (every step)
                 if render and render_path is not None:
                     try:
@@ -560,7 +560,7 @@ def _(
             self.critic.load_state_dict(ckpt["critic"], strict=strict)
             self.opt.load_state_dict(ckpt["opt"])
             return ckpt
-    return
+    return (Trainer,)
 
 
 @app.cell(hide_code=True)
@@ -571,32 +571,43 @@ def _(mo):
     return
 
 
-app._unparsable_cell(
-    r"""
+@app.cell
+def _(CentralCritic, SharedActor, Trainer, env, torch):
     actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=7)
     critic = CentralCritic(c_map=5, f_agent=4, d=128)
 
     # 1) trainer
-    device = \"cuda\" if torch.cuda.is_available() else \"cpu\"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=64, crop=7)
+
+    trainer.load_into("models/3agent-15x15.mdl")
 
     # 2) loop
     for it in range(4000):
         render = ((it+1) % 50 == 0)
-        render_path = f\"renders/{it+1:04d}_rollout.json\" if render else \"\"
+        render_path = f"renders/{it+1:04d}_rollout.json" if render else ""
         stats = trainer.train_step(render=render, render_path=render_path)
         if it%10 == 0:
-            print(f\"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} \"
-              f\"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} \"
-              f\"adv={stats['adv_mean']:.3f} adv_std={stats['adv_std':.3f]} ret={stats['ret_mean']:.3f}\")
-    """,
-    name="_"
-)
+            print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
+              f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
+              f"adv={stats['adv_mean']:.3f} adv_std={stats['adv_std']:.3f} ret={stats['ret_mean']:.3f}")
+    return
 
 
 @app.cell
-def _(trainer):
-    trainer.save("models/3agent-15x15.mdl", 4000)
+def _():
+    # trainer.save("models/3agent-15x15-1.mdl", 8000)
+    return
+
+
+@app.cell
+def _(json):
+    from utils import ansi_frames_to_gif
+
+    with open("saved_renders/4000_rollout.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    ansi_frames_to_gif(data, fps=4, out_path="render_gifs/4000_rollout.gif")
     return
 
 

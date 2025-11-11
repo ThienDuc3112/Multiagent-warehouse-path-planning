@@ -360,6 +360,8 @@ class FastWarehousePickPlaceMultiEnv(gym.Env):
         # Rewards
         rewards = {rid: -0.01 for rid in self.robots}
         for rid in self.robots:
+            if self._delivered[rid]:
+                continue
             if dist_after[rid] < dist_before[rid]:
                 rewards[rid] += 0.05
             elif dist_after[rid] > dist_before[rid]:
