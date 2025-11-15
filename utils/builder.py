@@ -138,4 +138,4 @@ def build_goal_vec(env, rid, H, W, device):
     dy = 2.0 * (gy - ry) / max(H - 1, 1)   # [-1,1]
     dist = ((gx - rx)**2 + (gy - ry)**2) ** 0.5
     dist = dist / ((H * H + W * W) ** 0.5)  # [0,1]
-    return torch.tensor([dx, dy, dist, phase], dtype=torch.float32, device=device)
+    return torch.tensor([gx / W, gy / H, dx, dy, dist, phase, 1 if env._delivered[rid] else 0], dtype=torch.float32, device=device)

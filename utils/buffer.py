@@ -1,6 +1,7 @@
 from __future__ import annotations
 import torch
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -9,10 +10,11 @@ class BufferRollout:
     A: int
     crop: int
     device: torch.device
+    goal_dim: Optional[int] = 6
 
     def __post_init__(self):
         self.crops = torch.zeros(self.T, self.A, 6, self.crop, self.crop, dtype=torch.float32, device=self.device)
-        self.gvecs = torch.zeros(self.T, self.A, 4, dtype=torch.float32, device=self.device)
+        self.gvecs = torch.zeros(self.T, self.A, self.goal_dim if self.goal_dim is not None else 6, dtype=torch.float32, device=self.device)
         self.amask = torch.zeros(self.T, self.A, 5, dtype=torch.float32, device=self.device)
         self.actions = torch.zeros(self.T, self.A, dtype=torch.long, device=self.device)
         self.logps = torch.zeros(self.T, self.A, dtype=torch.float32, device=self.device)

@@ -156,23 +156,37 @@ def _(mo):
 @app.cell
 def _(FastWarehouseInstance, RecordEpisodeStatistics):
     def create_fast_env():
+        # inst_dict = {
+        #     "height": 15, "width": 15, "horizon": 1024,
+        #     "robots": ["r1", "r2", "r3"],
+        #     "start_positions": {"r1": (1, 1), "r2": (1, 14), "r3": (10, 1)},
+        #     "A_targets": {"r1": (4, 4), "r2": (1, 10), "r3": (12, 2)},
+        #     "B_targets": {"r1": (13, 13), "r2": (14, 1), "r3": (9, 14)},
+        #     "obstacles": [
+        #         (3, 3), (4, 3), (5, 3),
+        #         (8, 14), (8, 13), 
+        #         (9, 11), (8, 11),
+        #         (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
+        #         (10, 11), (10, 12), (10, 13), (10, 14),
+        #     ],
+        # }
         inst_dict = {
-            "height": 15, "width": 15, "horizon": 128,
-            "robots": ["r1", "r2", "r3"],
-            "start_positions": {"r1": (1, 1), "r2": (1, 14), "r3": (10, 1)},
-            "A_targets": {"r1": (4, 4), "r2": (1, 10), "r3": (12, 2)},
-            "B_targets": {"r1": (13, 13), "r2": (14, 1), "r3": (9, 14)},
-            "obstacles": [
-                (3, 3), (4, 3), (5, 3),
-                (8, 14), (8, 13), 
-                (9, 11), (8, 11),
-                (10, 5), (10, 6), (10, 7), (10, 8), (10, 9),
-                (10, 11), (10, 12), (10, 13), (10, 14),
-            ],
-            # Optional:
-            # "start_carry": {"r1": False, "r2": False, "r3": False},
-            # "start_delivered": {"r1": False, "r2": False, "r3": False},
-        }
+                "height": 15, "width": 15, "horizon": 1024,
+                "robots": ["r1", "r2", "r3"],
+                "start_positions": {"r1": (0, 1), "r2": (14, 2), "r3": (10, 1)},
+                "A_targets": {"r1": (2, 2), "r2": (2, 13), "r3": (10, 2)},
+                "B_targets": {"r1": (13, 12), "r2": (12, 2), "r3": (8, 12)},
+                "obstacles": [
+                    (1, 1), (3, 1), (5, 1), (7, 1), (9, 1), (11, 1), (13, 1), 
+                    (1, 3), (3, 3), (5, 3), (7, 3), (9, 3), (11, 3), (13, 3), 
+                    (1, 5), (3, 5), (5, 5), (7, 5), (9, 5), (11, 5), (13, 5), 
+                    (1, 7), (3, 7), (5, 7), (7, 7), (9, 7), (11, 7), (13, 7), 
+                    (1, 9), (3, 9), (5, 9), (7, 9), (9, 9), (11, 9), (13, 9), 
+                    (1, 11), (3, 11), (5, 11), (7, 11), (9, 11), (11, 11), (13, 11), 
+                    (1, 13), (3, 13), (5, 13), (7, 13), (9, 13), (11, 13), (13, 13), 
+                ],
+            }
+
         inst = FastWarehouseInstance.from_dict(inst_dict)
 
         env = inst.make_env(render_mode="ansi", seed=0)
@@ -209,7 +223,8 @@ def _(layer_init, nn, torch):
             self.conv = nn.Sequential(
                 nn.Conv2d(c_in, 32, 3, padding=1), nn.ReLU(),
                 nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
-                nn.Conv2d(64, 64, 3, padding=1), nn.ReLU()
+                nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
+                nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
             )
             self.head = nn.Sequential(
                 nn.Linear(64*crops*crops + goal_dim, hidden), nn.ReLU(),
@@ -234,6 +249,7 @@ def _(layer_init, nn, torch):
             self.map = nn.Sequential(
                 nn.Conv2d(c_map, 32, 3, padding=1), nn.ReLU(),
                 nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
+                nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
                 nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
             )
             self.pool = nn.AdaptiveAvgPool2d(1)
@@ -336,6 +352,7 @@ def _(
             lr: float = 3e-4,
             max_grad_norm: float = 0.5,
             crop: int = 11,
+            goal_dim:int = 6
         ):
             self.env = env
             self.actor = actor.to(device)
@@ -350,8 +367,9 @@ def _(
             self.ent_coef, self.vf_coef = ent_coef, vf_coef
             self.max_grad_norm = max_grad_norm
             self.crop = crop
+            self.goal_dim = goal_dim
 
-            self.buf = BufferRollout(T=self.T, A=self.A, crop=crop, device=self.device)
+            self.buf = BufferRollout(T=self.T, A=self.A, crop=crop, device=self.device, goal_dim=goal_dim)
             self.opt = optim.Adam(list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr)
 
             # ensure crop is as actor expects
@@ -491,7 +509,7 @@ def _(
             # Flatten over (T * A)
             T, A = self.T, self.A
             crops = self.buf.crops.reshape(T*A, 6, self.crop, self.crop)
-            gvecs = self.buf.gvecs.reshape(T*A, 4)
+            gvecs = self.buf.gvecs.reshape(T*A, self.goal_dim)
             amask = self.buf.amask.reshape(T*A, 5)
             actions = self.buf.actions.reshape(T*A)
             old_logps = self.buf.logps.reshape(T*A).detach()
@@ -575,17 +593,21 @@ def _(mo):
 
 @app.cell
 def _(CentralCritic, SharedActor, Trainer, env, torch):
-    actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=9)
+    actor = SharedActor(c_in=6, n_actions=5, hidden=128, crops=9, goal_dim=7)
     critic = CentralCritic(c_map=5, f_agent=4, d=128)
 
     # 1) trainer
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=64, crop=9)
+    trainer = Trainer(env, actor, critic, device=device, steps_per_rollout=256, crop=9, goal_dim=7)
+    return (trainer,)
 
-    # trainer.load_into("models/3agent-15x15-updated_env.mdl")
+
+@app.cell
+def _(trainer):
+    # trainer.load_into("models/3agent-15x15-v7.mdl")
 
     # 2) loop
-    for it in range(4000):
+    for it in range(1860, 2000):
         render = ((it+1) % 50 == 0)
         render_path = f"renders/{it+1:04d}_rollout.json" if render else ""
         stats = trainer.train_step(render=render, render_path=render_path)
@@ -593,27 +615,27 @@ def _(CentralCritic, SharedActor, Trainer, env, torch):
             print(f"[{it+1:04d}] loss={stats['loss']:.3f} pi={stats['pi_loss']:.3f} "
               f"v={stats['v_loss']:.3f} H={stats['entropy']:.3f} "
               f"adv={stats['adv_mean']:.3f} adv_std={stats['adv_std']:.3f} ret={stats['ret_mean']:.3f}")
-    return (trainer,)
-
-
-@app.cell
-def _(trainer):
-    trainer.save("models/3agent-15x15-updated_env-2-v2.mdl", 4000)
     return
 
 
-@app.cell
+@app.cell(disabled=True)
+def _(trainer):
+    trainer.save("models/3agent-15x15-v8.mdl", 1000)
+    return
+
+
+@app.cell(disabled=True)
 def _(json):
     from utils import ansi_frames_to_gif
 
-    for i in [50, 100, 500, 1000, 4000]:
-    # for i in [50]:
+    # for i in [50, 100, 500, 1000, 4000]:
+    for i in [1000]:
         name = f'{i:04d}_rollout'
 
         with open(f"renders/{name}.json", "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        ansi_frames_to_gif(data, fps=2, out_path=f"saved_renders/{name}_env-2-v2.gif")
+        ansi_frames_to_gif(data, fps=3, out_path=f"saved_renders/{name}-v8.gif")
     return
 
 

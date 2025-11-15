@@ -353,20 +353,22 @@ class FastWarehousePickPlaceMultiEnv(gym.Env):
         dist_after = {rid: abs(new_x[rid] - xtgt[rid]) + abs(new_y[rid] - ytgt[rid]) for rid in self.robots}
 
         # Rewards
-        rewards = {rid: -0.01 for rid in self.robots}
+        rewards = {rid: -0.01 if not self._delivered[rid] else 0 for rid in self.robots}
         for rid in self.robots:
+            if int(action.get(rid, 0)) != 0:
+                rewards[rid] -= 0.01
             if blocked[rid]:
                 rewards[rid] -= 0.1
             if self._delivered[rid]:
                 continue
             if dist_after[rid] < dist_before[rid]:
-                rewards[rid] += 0.05
+                rewards[rid] += 0.02
             elif dist_after[rid] > dist_before[rid]:
-                rewards[rid] -= 0.05
+                rewards[rid] -= 0.02
             if picked_up[rid]:
-                rewards[rid] += 0.5
+                rewards[rid] += 1
             if dropped[rid]:
-                rewards[rid] += 1.0
+                rewards[rid] += 2.0
 
         # Commit state
         # Update occ maps & global robot layers only where moved
