@@ -2,6 +2,9 @@
 
 A lightweight, reproducible research repo for learning pickup‑and‑dropoff policies in a grid‑world warehouse with multiple robots. The environment is Gymnasium‑compatible and supports **parameter‑shared actors** with a **centralized critic**, curriculum/difficulty sampling, color GIF rendering with overlays, and solvability‑aware instance generation.
 
+![Warehouse rollout visualization](saved_renders/2000_rollout-v9.gif)  
+*A visualization of a multi-robot pickup-and-dropoff rollout.*
+
 ---
 
 ## Table of Contents
